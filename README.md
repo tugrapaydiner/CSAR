@@ -1,97 +1,69 @@
+<div align="center">
+
 # CSAR
 
-**Context-aware text compressor for long-document QA.** Free, deterministic, runs in ~0.4 s on CPU, no API. A faithful port of the DeepSeek-V4 hybrid attention idea (CSA + HCA) to text-level operations: every region gets cheap broad coverage; relevant regions also get a selective fine pass.
+### Compressed Sparse Attention Router
+
+*Context-aware text compressor for long-document QA.*
+*Free · deterministic · ~0.4 s on CPU · no API.*
+
+![tests](https://img.shields.io/badge/tests-112%20passing-brightgreen)
+![runtime](https://img.shields.io/badge/CPU-~0.4s-blue)
+![determinism](https://img.shields.io/badge/byte--identical-✓-success)
+![license](https://img.shields.io/badge/license-PolyForm%20NC%201.0.0-lightgrey)
+
+</div>
+
+<br>
+
+A faithful port of the **DeepSeek-V4** hybrid attention idea (CSA + HCA) to text-level operations: every region gets cheap broad coverage; relevant regions also get a selective fine pass.
 
 ```python
 from pipeline import compress_document_for_query
+
 result = compress_document_for_query(long_document, query)
 print(result.compressed_text, result.compression_ratio)
 ```
 
+<br>
+
 ---
 
-## Headline benchmark
+## 🏆 Headline benchmark
 
 NarrativeQA (LongBench), 30 questions, judged by `meta/llama-3.3-70b-instruct`, SQuAD-style F1. Same questions for every cell.
 
-| method                  | F1     | compression ratio | compress latency (p50) | answer cost          |
-|-------------------------|-------:|------------------:|-----------------------:|----------------------|
-| `none` (full context)   | 0.332  | 1.000             | —                      | full prompt          |
-| `bm25_50`               | 0.276  | 0.499             | 0.01 s                 | 50% prompt           |
-| **`csar_b50`** (this)   | **0.284** | **0.478**      | **0.44 s**             | 48% prompt           |
-| `nemotron_nano_compress`| 0.256  | 0.545             | 19.09 s                | 55% prompt + 30B API |
-| `nemotron_super_compress`| 0.322 | **0.047**         | 57.90 s                | 5% prompt + 120B API |
+<br>
 
-CSAR ties BM25 (within ±0.05 SE) at the same compression budget, while running 130× faster than `nemotron_nano_compress` and using zero API credits. **Nemotron-Super-120b dominates on quality-per-token** (it compresses a 22 k-word doc to ~1 k tokens at F1 = 0.322), but takes a 58 s flagship-model API call per example. CSAR's niche is "free, deterministic, half-second."
+| method                         |        F1 (mean ± std) | actual ratio |  compress p50 | answer cost           |
+|--------------------------------|-----------------------:|-------------:|--------------:|-----------------------|
+| `none` (full context)          |          0.332 ± 0.245 |        1.000 |             — | full prompt           |
+| `bm25_50`                      |          0.276 ± 0.261 |        0.499 |       0.015 s | 50 % prompt           |
+| 🌟 **`csar_b50`** (this work)  |      **0.284 ± 0.291** |    **0.478** |   **0.440 s** | 48 % prompt           |
+| `nemotron_nano_compress`       |          0.256 ± 0.267 |       0.545¹ |      19.091 s | 55 % prompt + 30B API |
+| `nemotron_super_compress`      |          0.322 ± 0.274 |    **0.047** |      57.901 s | 5 % prompt + 120B API |
 
-Full data, per-example responses, and reproduction script in [`benchmark/results/exp_compare/`](benchmark/results/exp_compare/).
+<sub>¹ Median ratio is 1.000: Nemotron-Nano fell back to the original document on 16 / 30 examples.</sub>
 
----
+<br>
 
-## Table of Contents
+### 🔍 Honest read at *n* = 30
 
-1. [Install & quick start](#install--quick-start)
-2. [Architecture](#architecture)
-3. [Pipeline flow](#pipeline-flow)
-4. [V4 mechanism mapping](#v4-mechanism-mapping)
-5. [Math](#math)
-6. [Complexity](#complexity)
-7. [Configuration](#configuration)
-8. [Presets](#presets)
-9. [Worked example](#worked-example)
-10. [Caching](#caching)
-11. [Determinism](#determinism)
-12. [Output format](#output-format)
-13. [Reproducing the benchmark](#reproducing-the-benchmark)
-14. [Limitations](#limitations)
-15. [Citations](#citations)
-16. [License](#license)
+Std bands are wider than every gap between methods. F1 differences in the 0.02–0.06 range cannot be distinguished from noise at this sample size. Defensible claims:
+
+- 🤝 **CSAR ties BM25 on quality** — paired per-example: 5 wins, 3 losses, 22 ties; mean Δ F1 = +0.007, paired *t* = 0.28. CSAR adapts its compression ratio per document (0.36 – 0.57) where BM25 is locked to a hard 0.50 budget.
+- ⚡ **CSAR runs ~130× faster than the cheapest neural compressor** — 0.44 s vs 19 s for Nemotron-Nano, with no API call and no GPU.
+- 🎯 **A 120B LLM-as-compressor (Nemotron-Super) is the only method on the frontier** — F1 = 0.322 at ratio = 0.047. CSAR's pitch versus that model is cost, latency, determinism, and on-prem deployment — not F1.
+
+<br>
 
 ---
 
-## Install & quick start
+## 🏗️ Architecture
 
-```powershell
-cd C:\Dev\CSAR
-python -m pip install -r requirements.txt
-python -m pip install -r requirements-ui.txt   # only if you want the Streamlit UI
-```
+Two complementary streams operate on the same overlapping chunk grid. Every compressible chunk passes through HCA. Top-k chunks additionally pass through CSA. Recent chunks bypass both.
 
-Library use:
-
-```python
-from pipeline import CompressionConfig, compress_document_for_query
-
-document = """
-Python began as a hobby programming project by Guido van Rossum.
-Van Rossum started implementation in December 1989.
-Python 0.9.0 was released in February 1991.
-The language name Python came from Monty Python's Flying Circus.
-The Python Software Foundation was created in 2001.
-"""
-
-result = compress_document_for_query(
-    document,
-    query="Where did Python's name come from?",
-    config=CompressionConfig(),
-)
-
-print(result.compressed_text)
-print(f"compression ratio: {result.compression_ratio:.2f}")
-print(f"selected chunks: {result.selected_chunk_indices}")
-```
-
-UI:
-
-```powershell
-streamlit run ui_streamlit.py
-```
-
----
-
-## Architecture
-
-Two complementary streams operate on the same overlapping chunk grid. Every compressible chunk passes through HCA. Top-k chunks additionally pass through CSA. Recent chunks bypass both. This is the V4 hybrid attention idea, ported to text.
+<br>
 
 ```mermaid
 flowchart LR
@@ -139,11 +111,15 @@ flowchart LR
     style SW fill:#fdf6e3,stroke:#d8b76a
 ```
 
-Key invariant: **every compressible chunk lands in exactly one of {summarized (HCA), summarized + extracted (HCA + CSA), counted in OMITTED}**. Sliding-window chunks are accounted for separately. This is the coverage property V4 calls "every region gets the appropriate fidelity, including zero."
+<br>
+
+> 🔑 **Key invariant.** Every compressible chunk lands in exactly one of {summarized (HCA), summarized + extracted (HCA + CSA), counted in OMITTED}. Sliding-window chunks are accounted for separately. This is the coverage property V4 calls *"every region gets the appropriate fidelity, including zero."*
+
+<br>
 
 ---
 
-## Pipeline flow
+## 🔄 Pipeline flow
 
 ```mermaid
 flowchart TD
@@ -167,52 +143,99 @@ flowchart TD
     ASM --> OUT["Compressed context<br/>+ [Summary:] + [OMITTED:] + [Recent content, verbatim:]"]
 ```
 
-Each numbered step maps directly to a function in `pipeline.py`, `scorer.py`, `csa.py`, `hca.py`, or `chunker.py`. The 19 mechanisms below are distributed across these steps.
+<br>
+
+📂 Each numbered step maps directly to a function in `pipeline.py`, `scorer.py`, `csa.py`, `hca.py`, or `chunker.py`.
+
+<br>
 
 ---
 
-## V4 mechanism mapping
+## 📊 Per-method F1
 
-| # | V4 mechanism | CSAR step | File |
-|---|---|---|---|
-| A | Dual-stream overlapping compression | half-blocks of `half_block_size` tokens, chunk = (Hᵢ, Hᵢ₊₁) | `chunker.py` |
-| B | Lightning indexer (multi-head + ReLU + low-rank) | 5-aspect scoring, ReLU clipping, per-aspect weights | `scorer.py` |
-| C | Two-stage filter (cheap → expensive) | BM25 survivors gate the embedding/score loop | `filter_bm25.py`, `scorer.py` |
-| D | Hybrid HCA + CSA full coverage | every chunk → HCA; top-k → HCA + CSA | `pipeline.py` |
-| E | Sliding window verbatim | last `sliding_window_chunks` bypass scoring/HCA/CSA | `pipeline.py:split_sliding_window` |
-| F | Attention-sink markers | `[OMITTED: N sections of low-relevance content]` | `pipeline.py:assemble_context` |
-| G | Sinkhorn-Knopp normalization | exp(βS), alternating row/col scaling, 20 iters | `scorer.py:sinkhorn_balance` |
-| H | Per-aspect scoring | 2-D score matrix shape (N, 5), never collapsed early | `scorer.py` |
-| I | Position bias within chunks | first/last sentence multiplier `1 + βpos` | `scorer.py:sentence_position_multipliers` |
-| J | Recency split (semantic + position) | `α·semantic + (1-α)·recency`, α adapts to query | `scorer.py:recency_aware_scores` |
-| L | L2-normalization + ε safety | zero vectors handled; no NaN | `determinism.py:deterministic_l2_normalize` |
-| M | Mixed-precision embedding cache | `np.float16` storage in Tier 1 | `cache.py:Tier1Payload` |
-| N | Compounded top-k tuning | doc'd interaction between `top_k_ratio` and `hca_max_words` | `pipeline.py:CompressionConfig` |
-| O | Quantized score caching | `int8` centered quantization, mean+scale stored | `cache.py:quantize_score_matrix` |
-| P | Two-tier cache | Tier 1 = document, Tier 2 = (document, query) | `cache.py:TwoTierCache` |
-| Q | Determinism | blake2b hashing, sorted iteration, deterministic tiebreaks; subprocess-verified | `determinism.py` + `tests/test_determinism.py` |
-| R | Adaptive compression modes | query complexity (simple/moderate/complex) → top-k ratio | `query_views.py:classify_complexity` |
-| S | Parallel query view generation | 4 query views (literal/rewritten/entity/question_type) | `query_views.py` |
-| T | Stable routing | selection is fixed before extraction; no re-ranking after CSA | `pipeline.py` |
+Mean F1 with a translucent ±1 σ band behind each bar to show how much room the noise occupies.
 
-Plus three later additions:
+<br>
 
-| # | Mechanism | What it does |
-|---|---|---|
-| Fix-1 | BM25 as 5th aspect | direct lexical signal stacked next to embedding-based aspects |
-| Fix-2 | Question-aware head weights | category (person/temporal/numerical/causal) re-weights aspects |
-| Fix-3 | Answer-span boost | small additive prior on sentences carrying the answer pattern |
-| Fix-4 | HCA relevance threshold | sub-floor chunks emit nothing; counted in OMITTED |
+<img width="1270" height="567" alt="image" src="https://github.com/user-attachments/assets/a4e073c2-9f94-4f70-b8c3-e86b61ae086f" />
 
-All of the above are unit-tested. 112 tests, 0 skips.
+<br>
+
+> 💬 **What this says.** No-compression and Nemotron-Super (a 120B LLM compressor) lead. CSAR sits at 0.284, a hair above BM25 at 0.276. The bands cover roughly ±0.27 on every method — wider than any difference between methods. Means alone are not trustworthy at *n* = 30.
+
+<br>
 
 ---
 
-## Math
+## 📈 Compression / quality frontier
+
+Each method occupies a point in the (ratio, F1) plane. ⬆️⬅️ Top-left is the goal: maximum quality, minimum tokens.
+
+<br>
+
+<img width="1270" height="714" alt="image" src="https://github.com/user-attachments/assets/c88e89e8-0ee6-4e9c-8f2f-e60ccc8003e0" />
+
+<br>
+
+> 💬 **What this says.** Nemotron-Super-120B is alone in the upper-left at ~5 % ratio with near-baseline F1 — the only method on the actual frontier. CSAR and BM25 occupy the same point in the middle: 50 % budget, indistinguishable F1.
+
+<br>
+
+---
+
+## 🥊 Per-example head-to-head
+
+The bar chart shows means; this matrix shows what actually happened on the 30 individual questions. Each cell is wins–losses (with ties in parentheses) for the row method against the column method.
+
+<br>
+
+<img width="1075" height="868" alt="image" src="https://github.com/user-attachments/assets/ee855250-80c6-47ef-8f4b-15bd666d63b7" />
+
+<br>
+
+> 💬 **What this says.** No method is robustly better than another at this sample size — most cells show 14–22 ties out of 30. CSAR vs BM25 is 5–3 with 22 ties (paired *t* = 0.28); CSAR vs Nemotron-Super is 6–10 with 14 ties; CSAR vs no-compression is 5–11 with 14 ties.
+
+<br>
+
+---
+
+## ⚡ Compression latency
+
+The other axis CSAR competes on is wall-clock time. Three orders of magnitude separate the methods.
+
+<br>
+
+<img width="1270" height="477" alt="image" src="https://github.com/user-attachments/assets/f8814f37-f427-4aaf-b327-add0995e14d0" />
+
+<br>
+
+> 💬 **What this says.** BM25 is the floor at 15 ms — a pure index lookup. CSAR adds 425 ms of structural compression on top of that. Both stay subsecond and run on CPU with no API call. The neural compressors are 19 s and 58 s respectively, dominated by the round-trip to NVIDIA NIM and the 30B / 120B model forward passes. Not at the top of the F1 chart, but on the latency / cost axis the F1 chart cannot see.
+
+<br>
+
+---
+
+## 📉 Compression aggressiveness
+
+The summary table reports a single mean ratio per method, hiding two interesting properties: BM25 is a hard budget, CSAR adapts per-document, and Nemotron-Nano often refuses to compress at all.
+
+<br>
+
+<img width="1270" height="686" alt="image" src="https://github.com/user-attachments/assets/0fc4c076-87d1-4356-adda-74c6afb8b8d7" />
+
+<br>
+
+> 💬 **What this says.** CSAR ratios range 36–57 % around the 50 % target — the model spends more or fewer tokens per document depending on what the scoring matrix says is worth keeping. BM25 is locked to a hard 50 %. Nemotron-Nano fell back to the original document on 16 / 30 examples, so its median ratio is 100 %.
+
+<br>
+
+---
+
+## 📐 Math
 
 ### 1. Overlapping chunks
 
-Document is split into half-blocks of ≈ `half_block_size` tokens:
+Document is split into half-blocks of approximately `half_block_size` tokens:
 
 $$ H_0, H_1, H_2, \ldots, H_{B-1} $$
 
@@ -220,23 +243,36 @@ Chunks are adjacent half-block pairs:
 
 $$ C_i = (H_i, H_{i+1}), \quad i = 0, \ldots, B-2 $$
 
-Interior half-blocks appear in exactly two chunks. First and last appear in one. This is the text analogue of overlapping convolutional windows.
+Interior half-blocks appear in exactly two chunks; first and last appear in one. This is the text analogue of overlapping convolutional windows.
+
+<br>
 
 ### 2. Multi-aspect score matrix
 
 For $N$ chunks and $A = 5$ aspects, the scorer builds:
 
-$$ S_{\text{raw}} \in \mathbb{R}^{N \times A}, \quad S = \max(S_{\text{raw}}, 0) $$
+$$ S_{\mathrm{raw}} \in \mathbb{R}^{N \times A}, \quad S = \max(S_{\mathrm{raw}}, 0) $$
 
-Aspects: $\{\text{semantic, rewritten, entity, question\_type, BM25}\}$. For chunk $i$:
+Aspects:
 
-- $S_{i,0}$ = $\langle e_i, e_q^{\text{lit}} \rangle$ (cosine on hash-bag-of-words)
-- $S_{i,1}$ = $\langle e_i, e_q^{\text{rew}} \rangle$
-- $S_{i,2}$ = entity overlap fraction
-- $S_{i,3}$ = $\langle e_i, e_q^{\text{qtype}} \rangle$
-- $S_{i,4}$ = $\text{BM25}(C_i, q) / \max_j \text{BM25}(C_j, q)$
+$$ \{\mathrm{semantic}, \mathrm{rewritten}, \mathrm{entity}, \mathrm{questionType}, \mathrm{BM25}\} $$
+
+For chunk $i$:
+
+- $S_{i,0} = \langle e_i, e_q^{\mathrm{lit}} \rangle$  
+  cosine on hash-bag-of-words
+
+- $S_{i,1} = \langle e_i, e_q^{\mathrm{rew}} \rangle$
+
+- $S_{i,2} =$ entity overlap fraction
+
+- $S_{i,3} = \langle e_i, e_q^{\mathrm{qtype}} \rangle$
+
+- $S_{i,4} = \mathrm{BM25}(C_i, q) / \max_j \mathrm{BM25}(C_j, q)$
 
 Non-survivors of the BM25 prefilter have all-zero rows.
+
+<br>
 
 ### 3. Sinkhorn-Knopp balancing
 
@@ -244,33 +280,40 @@ Active sub-matrix is exponentiated:
 
 $$ M^{(0)}_{ij} = \exp(\beta \cdot S_{ij}) $$
 
-Rows scaled toward unit sum:
+Rows are scaled toward unit sum:
 
 $$ M^{(t+\frac{1}{2})}_{ij} = M^{(t)}_{ij} \cdot \frac{1}{\sum_k M^{(t)}_{ik}} $$
 
-Then columns scaled toward $N/A$:
+Then columns are scaled toward $N/A$:
 
 $$ M^{(t+1)}_{ij} = M^{(t+\frac{1}{2})}_{ij} \cdot \frac{N/A}{\sum_k M^{(t+\frac{1}{2})}_{kj}} $$
 
-Iterated 20 times. Converges (Sinkhorn-Knopp 1967) when $S$ has full support. Zero rows/cols stay zero — prevents irrelevant chunks from being normalized into relevance.
+This is iterated 20 times. It converges when $S$ has full support. Zero rows or columns stay zero, which prevents irrelevant chunks from being normalized into relevance.
+
+<br>
 
 ### 4. Query-weighted score
 
 The balanced matrix collapses to a 1-D vector with query-dependent weights:
 
-$$ q_i = \sum_{a=0}^{A-1} M_{i,a} \cdot w_a(\text{category}, \text{query\_type}) $$
+$$ q_i = \sum_{a=0}^{A-1} M_{i,a} \cdot w_a(\mathrm{category}, \mathrm{queryType}) $$
 
-Default weights for "factual" + "person" category (e.g. *"Who created Python?"*):
+Default weights for `"factual"` + `"person"` category, such as *"Who created Python?"*:
 
 $$ w = (0.10, 0.10, 0.40, 0.10, 0.40) $$
 
 Entity and BM25 dominate when the answer is expected to be a literal name.
 
+<br>
+
 ### 5. Recency blend
 
-$$ \text{score}_i = \alpha \cdot q_i + (1 - \alpha) \cdot r_i, \quad r_i = \frac{i}{N - 1} $$
+$$ \mathrm{score}_i = \alpha \cdot q_i + (1 - \alpha) \cdot r_i, \quad r_i = \frac{i}{N - 1} $$
 
-$\alpha = 0.6$ if the query contains a recency marker (latest, current, today, …); $\alpha = 0.9$ otherwise.
+$\alpha = 0.6$ if the query contains a recency marker such as latest, current, today, etc.  
+Otherwise, $\alpha = 0.9$.
+
+<br>
 
 ### 6. Top-k with abstain
 
@@ -278,250 +321,99 @@ Number selected:
 
 $$ k = \max(1, \lfloor N \cdot \rho \rfloor) $$
 
-where $\rho$ is `top_k_ratio_override`, or comes from `complexity → ratio` lookup (simple=0.15, moderate=0.30, complex=0.45). Final selection:
+where $\rho$ is `top_k_ratio_override`, or comes from the `complexity → ratio` lookup:
 
-$$ \mathcal{S} = \{ i \in \text{top-}k : \text{score}_i > \tau \} $$
+- simple = `0.15`
+- moderate = `0.30`
+- complex = `0.45`
 
-with $\tau$ = `abstain_threshold` (default 0.05).
+Final selection:
+
+$$ \mathcal{S} = \{ i \in \mathrm{topK} : \mathrm{score}_i > \tau \} $$
+
+with $\tau =$ `abstain_threshold`, default `0.05`.
+
+<br>
 
 ### 7. CSA sentence extraction
 
-For each selected chunk, sentences are flattened with positions $j = 0, \ldots, m-1$. Each sentence gets a per-aspect score row, collapsed by the same query weights, then:
+For each selected chunk, sentences are flattened with positions:
 
-$$ s'_j = (s_j \cdot b_j) + \text{span\_bonus}_j $$
+$$ j = 0, \ldots, m - 1 $$
+
+Each sentence gets a per-aspect score row, collapsed by the same query weights:
+
+$$ s'_j = (s_j \cdot b_j) + \mathrm{spanBonus}_j $$
 
 where:
 
-$$ b_j = \begin{cases} 1 + \beta_{\text{pos}} & j \in \{0, m-1\} \\ 1 & \text{otherwise} \end{cases} $$
+$$ b_j = \begin{cases} 1 + \beta_{\mathrm{pos}}, & j \in \{0, m - 1\} \\ 1, & \mathrm{otherwise} \end{cases} $$
 
-and `span_bonus = 0.15` if the sentence matches the question-category regex (year-pattern for *when*, capitalized-name pattern for *who*, etc.). 0 otherwise.
+`span_bonus = 0.15` if the sentence matches the question-category regex, such as:
+
+- year pattern for *when*
+- capitalized-name pattern for *who*
+
+Otherwise, `span_bonus = 0`.
 
 Within each chunk, positive scores compete via softmax:
 
 $$ p_j = \frac{\exp(s'_j - \max_k s'_k)}{\sum_k \exp(s'_k - \max_k s'_k)} $$
 
-Sentences appearing in multiple overlapping chunks have their normalized $p_j$ values **summed** across occurrences before final ranking — this is the joint-window competition step from V4. Top $\lceil m \cdot \rho_{\text{sent}} \rceil$ sentences are kept.
+Sentences appearing in multiple overlapping chunks have their normalized $p_j$ summed across occurrences before final ranking. This is the joint-window competition step from V4.
+
+Top $\lceil m \cdot \rho_{\mathrm{sent}} \rceil$ sentences are kept.
+
+<br>
 
 ### 8. Final assembly
 
 For each compressible chunk $i$, walking left to right:
 
-- If $i \in \mathcal{S}$: emit `[Summary: hca_summary_i]\nextracted_sentences`
-- Else if $\max_a M_{i,a} < \tau_{\text{HCA}}$: emit nothing, increment OMITTED counter
-- Else: emit `[Summary: hca_summary_i]`, flush OMITTED counter
+- If $i \in \mathcal{S}$:  
+  emit `[Summary: hca_summary_i]\nextracted_sentences`
 
-Then append:
+- Else if $\max_a M_{i,a} < \tau_{\mathrm{HCA}}$:  
+  emit nothing and increment the OMITTED counter
 
-```
-[Recent content, verbatim:]
-<sliding window content>
-```
+- Else:  
+  emit `[Summary: hca_summary_i]` and flush the OMITTED counter
 
-and any final OMITTED counter.
+Then append the sliding-window block and any final OMITTED counter.
 
----
-
-## Complexity
-
-For a document of $N$ chunks, $V$ vocabulary, $L$ avg sentences per chunk, $E$ embedding dim:
-
-| Step | Time | Space | Bottleneck |
-|---|---|---|---|
-| Sentence split | $O(\|\text{doc}\|)$ | $O(\|\text{doc}\|)$ | regex scan |
-| Half-block packing | $O(N)$ | $O(N)$ | tiktoken token count |
-| BM25 prefilter | $O(N \cdot V)$ | $O(N \cdot V)$ | term frequencies |
-| Embedding (survivors only) | $O(N_{\text{surv}} \cdot \|\text{chunk}\|)$ | $O(N \cdot E)$ | blake2b hashes |
-| Score matrix | $O(N_{\text{surv}} \cdot E)$ | $O(N \cdot 5)$ | 4 dot products + entity overlap |
-| Sinkhorn (20 iters) | $O(20 \cdot N \cdot 5)$ | $O(N \cdot 5)$ | matrix scaling |
-| Top-k selection | $O(N \log N)$ | $O(N)$ | sort |
-| HCA per chunk | $O(L \cdot E)$ | $O(L)$ | sentence centroid sim |
-| CSA per selected chunk | $O(k \cdot L \cdot E)$ | $O(k \cdot L)$ | per-sentence scoring |
-| Assembly | $O(N)$ | $O(\|\text{output}\|)$ | string concat |
-
-Total wall: $O(N \cdot (V + E + L \cdot E))$, dominated by the BM25 inverted-index build for large $N$ and the per-sentence embedding for many selected chunks. On NarrativeQA (~22 k words, ~230 chunks) this lands at **0.4 s p50 on CPU, single thread**.
-
-Memory peaks at the embedding matrix: $N \cdot E \cdot 8$ bytes float64. With $E = 4096$ and $N = 230$, ~7.5 MB.
+<br>
 
 ---
 
-## Configuration
+## 📦 Install & reproduce
 
-`CompressionConfig` controls every knob. All defaults are tuned for general QA at moderate budgets.
-
-```python
-from pipeline import CompressionConfig
-
-config = CompressionConfig(
-    half_block_size=48,
-    sliding_window_chunks=2,
-    bm25_keep_fraction=0.7,
-    bm25_min_chunks_to_filter=10,
-    sentence_keep_ratio=0.5,
-    hca_max_words=20,
-    omission_threshold=2,
-    beta_pos=0.1,
-    sinkhorn_beta=1.0,
-    sinkhorn_max_iter=20,
-    abstain_threshold=0.05,
-    top_k_ratio_override=None,
-    alpha_recent=0.6,
-    alpha_default=0.9,
-    raw_score_blend=0.0,
-    hca_relevance_threshold=0.05,
-)
+```powershell
+cd C:\Dev\CSAR
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-ui.txt   # Streamlit UI (optional)
 ```
 
-| setting | meaning | typical range |
-|---|---|---|
-| `half_block_size` | target tokens per half-block | 48–128 |
-| `sliding_window_chunks` | last K chunks kept verbatim | 0–4 |
-| `bm25_keep_fraction` | survivor share of BM25 prefilter | 0.5–1.0 |
-| `bm25_min_chunks_to_filter` | min chunks before BM25 fires | 10 |
-| `sentence_keep_ratio` | fraction of sentences kept inside selected chunks | 0.3–0.8 |
-| `hca_max_words` | word budget per HCA summary | 14–28 |
-| `omission_threshold` | min run length to emit `[OMITTED:]` | 2 |
-| `beta_pos` | first/last sentence position bias | 0.0–0.2 |
-| `sinkhorn_beta` | exp scaling before Sinkhorn iters | 0.5–2.0 |
-| `sinkhorn_max_iter` | Sinkhorn iterations | 10–30 |
-| `abstain_threshold` | min score for CSA selection | 0.0–0.10 |
-| `top_k_ratio_override` | force-fixed top-k ratio | 0.10–0.50 |
-| `alpha_recent` / `alpha_default` | recency blend coefficients | (0.6, 0.9) |
-| `hca_relevance_threshold` | floor below which HCA is dropped to OMITTED | 0.0–0.10 |
+<br>
 
-**Compounded top-k tuning:** `top_k_ratio_override` and `hca_max_words` interact. Aggressive HCA (`hca_max_words≈10`) needs moderate top-k (0.30–0.40) so CSA carries the missing detail. Light HCA (`hca_max_words≈25`) tolerates smaller top-k (0.15–0.20).
+```python![Uploading 01_f1_ranking-dark.svg…]()
+![Uploading 01_f1_ranking-dark.svg…]()
+![Uploading 01_f1_ranking-dark.svg…]()
 
----
+from pipeline import CompressionConfig, compress_document_for_query
 
-## Presets
-
-```python
-AGGRESSIVE = CompressionConfig(
-    half_block_size=96, sliding_window_chunks=1, sentence_keep_ratio=0.35,
-    hca_max_words=14, top_k_ratio_override=0.15, raw_score_blend=0.5,
-)
-
-MODERATE = CompressionConfig(
-    half_block_size=96, sliding_window_chunks=0, sentence_keep_ratio=0.5,
-    hca_max_words=20, top_k_ratio_override=0.20, raw_score_blend=1.0,
-)
-
-LIGHT = CompressionConfig(
-    half_block_size=128, sliding_window_chunks=3, sentence_keep_ratio=0.7,
-    hca_max_words=28, top_k_ratio_override=0.45, raw_score_blend=0.35,
-)
-```
-
-`AGGRESSIVE` for fact lookups (small budget, tight selection). `MODERATE` for general QA. `LIGHT` for analytical or comparative questions where losing detail is more expensive than spending tokens.
-
----
-
-## Worked example
-
-**Input** (9 sentences, 149 words):
-
-```
-Python began as a hobby programming project by Guido van Rossum at Centrum
-Wiskunde and Informatica in the Netherlands. Van Rossum started implementation
-in December 1989 while looking for a successor to the ABC language. Python 0.9.0
-was released in February 1991 and already included classes, exceptions,
-functions, and core data types. The language name Python came from Monty
-Python's Flying Circus rather than from the snake. Python's design philosophy
-emphasizes readability, explicit code, and the idea that there should be one
-obvious way to do it. The Python Software Foundation was created in 2001 to
-hold intellectual property and support the Python community. CPython is the
-reference implementation of Python and is written primarily in the C
-programming language. PyPy is an alternative Python implementation known for
-its just-in-time compiler. Python 2 reached end of life on January 1 2020
-after a long migration period toward Python 3.
-```
-
-**Query:** *"Who created Python?"*
-
-**Output** (compression ratio 0.49):
-
-```
-[Summary: Python began as a hobby programming project by Guido van Rossum at Centrum Wiskunde and Informatica in the Netherlands.]
-
-[Summary: The Python Software Foundation was created in 2001 to hold intellectual property and support the Python community.]
-The Python Software Foundation was created in 2001 to hold intellectual property and support the Python community.
-Python 2 reached end of life on January 1 2020 after a long migration period toward Python 3.
-```
-
-What happened, in order:
-
-1. Chunked into 2 chunks (HB₀+HB₁, HB₁+HB₂) at `half_block_size=96`.
-2. Both chunks compressible. BM25 keeps both.
-3. Query "Who created Python?" → category=`person`, weights peak on entity (0.40) and BM25 (0.40).
-4. Score matrix → Sinkhorn → balanced. Chunk 1 wins (slightly higher BM25 + entity match on "Python community").
-5. Top-k = max(1, ⌊2·0.15⌋) = 1 chunk selected.
-6. HCA gives both chunks an extractive summary using sentence-centroid + position bias.
-7. CSA extracts 2 sentences from chunk 1 via per-sentence scoring + softmax + position bonus.
-8. Assembly: chunk 0 gets `[Summary:]` only, chunk 1 gets `[Summary:]` + 2 extracted sentences.
-
-The Guido sentence is preserved verbatim in chunk 0's summary because it scored highest under sentence-centroid on chunk 0. The CSA-extracted sentences include "Python Software Foundation… community" (matches "Python" entity twice) and the most-recent sentence (recency boost).
-
----
-
-## Caching
-
-Two-tier cache, optional:
-
-```python
 result = compress_document_for_query(
-    document, query, cache=".csar_cache",
+    document,
+    query="Where did Python's name come from?",
+    config=CompressionConfig(),
 )
+
+print(result.compressed_text)
+print(f"compression ratio: {result.compression_ratio:.2f}")
 ```
 
-| tier | key | stores |
-|---|---|---|
-| **1 (document)** | `sha256(doc, config)` | chunks (tuple), `chunk_embeddings` (`float16`), HCA summaries |
-| **2 (query)** | `sha256(doc, query, config)` | query views, `int8`-quantized score matrix, selected indices, CSA extractions, final compressed text |
+<br>
 
-Pipeline behavior:
-
-- **Tier 2 hit:** instant return of cached compressed text. No chunking, embedding, scoring, HCA, or CSA.
-- **Tier 1 hit + Tier 2 miss:** skip chunking, embedding, HCA. Recompute scoring + CSA + assembly. Typical for "same document, new question."
-- **Cold:** full pipeline.
-
-Mirrors a KV-cache split: query-independent work cached once per document, query-dependent routing cached per query.
-
----
-
-## Determinism
-
-CSAR is byte-identical across runs and across processes:
-
-- blake2b hash embeddings (no Python `hash()` randomization)
-- sorted iteration everywhere
-- deterministic tiebreaks (always by index)
-- no random sampling
-- no LLM calls in the default path
-- `tests/test_determinism.py::test_pipeline_output_is_bit_identical_across_subprocesses` runs the full pipeline in two fresh `subprocess.check_output` calls and diffs the bytes
-
-Same input + same `CompressionConfig` + same dependency versions → same compressed text.
-
----
-
-## Output format
-
-```text
-[Summary: ...]                                              ← HCA-only chunk
-selected evidence sentence                                  ← CSA extraction
-selected evidence sentence
-
-[Summary: ...]                                              ← HCA + nothing more
-
-[OMITTED: 3 sections of low-relevance content]              ← run of dropped chunks
-
-[Recent content, verbatim:]
-...                                                          ← sliding-window block
-```
-
-Markers are intentional. They tell the downstream model where compression happened and reduce the chance the model treats the compressed output as a complete document. The Streamlit UI styles them with semantic CSS roles (`csar-summary`, `csar-csa`, `csar-omitted`, `csar-section-header`) so users can *see* the V4 mechanisms doing their work.
-
----
-
-## Reproducing the benchmark
+Reproducing the headline benchmark:
 
 ```powershell
 # Single-doc local harness (no API):
@@ -535,37 +427,16 @@ python -m benchmark.run_benchmark --methods none,bm25,csar_aggressive,csar_moder
 python -m scripts.exp_compare
 ```
 
-`scripts/exp_compare.py` is the script that produced the headline table. It reads `NVIDIA_API_KEY` from env or `api.txt`, reuses the on-disk API cache so previously-seen prompts are free, and writes per-cell raw rows + summary to `benchmark/results/exp_compare/`.
-
-The 112-test suite (`pytest tests/`) covers every mechanism with one or more tests verifying the invariant, not just the function name.
+<br>
 
 ---
 
-## Limitations
+## 📄 License
 
-- **Not a trained neural compressor.** Deterministic structural compression. Beats BM25 by hair, loses to flagship LLMs as compressors on F1.
-- **Quality-per-token niche.** Wins decisively over BM25 and a 30B Nemotron compressor on quality-per-token *at fixed compression ratio*. Loses to Nemotron-Super-120b on F1 *and* on quality-per-token — a 120B model summarizing a long doc to 5% of its tokens reads better than CSAR's selection. CSAR's edge is "free, no API, half a second."
-- **Hash embedding is weak.** `DeterministicHashEmbedding` is a 4096-dim blake2b bag-of-words. Strong for determinism, weak vs trained sentence embeddings. A swap-in for `sentence-transformers/all-MiniLM-L6-v2` would likely improve F1 at the cost of determinism and a model download.
-- **Token ratios are approximate.** Final assembly stacks summaries + CSA extractions + sliding window + headers. At low `top_k_ratio` the structural overhead can exceed savings — see `exp1_*.json` artifacts in `benchmark/results/` for the expansion case (b65/b80/b90 produced output 1.3–1.7× the input).
-- **Query-blind cases.** If the query is vague or answer evidence is lexically distant from the query, BM25 and entity overlap both miss; CSAR falls back to the embedding aspects which are also weak with hash embeddings.
-- **Single document, single language (English).** Multi-document inputs are not modeled; non-English may break the regex-based span heuristics.
-
----
-
-## Citations
-
-- DeepSeek-AI, *DeepSeek-V4 Technical Report*, 2025. Mechanisms A–U above are textual ports of named V4 components — see `README` mechanism table for one-to-one mapping.
-- Sinkhorn, R. and Knopp, P., *Concerning nonnegative matrices and doubly stochastic matrices*, Pacific J. Math, 1967. The balancing step.
-- Robertson, S. & Walker, S., *Some simple effective approximations to the 2-Poisson model for probabilistic weighted retrieval*, SIGIR, 1994. BM25.
-- Rajpurkar et al., *SQuAD: 100,000+ Questions for Machine Comprehension of Text*, EMNLP, 2016. Token-level F1 metric used in benchmarks.
-- LongBench, Bai et al., 2023. NarrativeQA subset and prompt template.
-
----
-
-## License
-
-**[PolyForm Noncommercial License 1.0.0](LICENSE)** — free for personal, research, educational, and other non-commercial use. Commercial use requires a separate license; open an issue with subject "Commercial license" at <https://github.com/tugrapaydiner/CSAR/issues> to start the conversation.
+**[PolyForm Noncommercial License 1.0.0](LICENSE)** — free for personal, research, educational, and other non-commercial use. Commercial use requires a separate license; open an issue with subject *"Commercial license"* at <https://github.com/tugrapaydiner/CSAR/issues> to start the conversation.
 
 The software is provided "as is" with no warranty. The CSAR Project is not liable for anything that happens when you use it. See [LICENSE](LICENSE) for the full legal text.
 
-What counts as commercial: using CSAR (or a derivative) inside a paid product, paid service, internal tool that generates revenue, or anything where a customer is paying for output that depends on it. What doesn't: research, teaching, evaluation, hobby projects, internal-evaluation use at a company while deciding whether to license, charity / public-sector / educational use.
+**What counts as commercial:** using CSAR (or a derivative) inside a paid product, paid service, internal tool that generates revenue, or anything where a customer is paying for output that depends on it.
+
+**What doesn't:** research, teaching, evaluation, hobby projects, internal-evaluation use at a company while deciding whether to license, charity / public-sector / educational use.
