@@ -206,6 +206,15 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Local UI dependency/cache folders
+.ui_deps/
+.bench_deps/
+.csar_cache/
+.continue/
+api.txt
+*api_key*
+*secret*
+
 # PyPI configuration file
 .pypirc
 
